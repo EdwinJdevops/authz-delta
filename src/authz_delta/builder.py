@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .extractors.github import extract_workflow
@@ -57,6 +57,7 @@ def _digest(files: tuple[tuple[str, Path], ...]) -> str:
 def build_revision(
     *,
     repository: str,
+    oidc_subject_prefix: str | None = None,
     root: Path,
     plan: Path,
     rbac_inputs: tuple[Path, ...],
@@ -143,6 +144,7 @@ def build_revision(
 
     snapshot = build_snapshot(
         repository=repository,
+        oidc_subject_prefix=oidc_subject_prefix,
         workflows=tuple(sorted(set(workflows))),
         role_trusts=tuple(sorted(set(trusts))),
         access_entries=tuple(sorted(set(entries))),
@@ -150,4 +152,12 @@ def build_revision(
         bindings=tuple(sorted(set(bindings))),
         diagnostics=tuple(sorted(set(diagnostics))),
     )
+    # File/resource labels are not a proof of diagnostic irrelevance. Until dependency
+    # tracking is complete, uncertainty in raw inputs blocks all deltas for this revision.
+    if snapshot.diagnostics:
+        snapshot = replace(
+            snapshot,
+            capabilities=frozenset(),
+            diagnostics=tuple(sorted({replace(item, anchors=()) for item in snapshot.diagnostics})),
+        )
     return RevisionBuild(snapshot=snapshot, input_sha256=_digest(tuple(consumed)))

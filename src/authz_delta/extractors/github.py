@@ -16,6 +16,7 @@ from ..facts import WorkflowRoleRequest
 from ..model import Diagnostic, ResultState, SourceLocation
 
 _CONFIGURE_AWS = re.compile(r"^aws-actions/configure-aws-credentials@[^\s]+$")
+_MAX_WORKFLOW_BYTES = 2 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -121,8 +122,33 @@ def _parse_root(
     path: Path, display_path: str
 ) -> tuple[Mapping[object, object] | None, tuple[Diagnostic, ...]]:
     try:
-        source = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except (OSError, UnicodeError) as error:
+        return None, (
+            Diagnostic(
+                code="workflow_read_error",
+                state=ResultState.INDETERMINATE,
+                message=f"Cannot read workflow: {error}.",
+                anchors=(display_path,),
+                evidence=(SourceLocation(file=display_path),),
+            ),
+        )
+    if len(raw) > _MAX_WORKFLOW_BYTES:
+        return None, (
+            Diagnostic(
+                code="workflow_size_limit_exceeded",
+                state=ResultState.INDETERMINATE,
+                message=(
+                    f"Workflow exceeds the {_MAX_WORKFLOW_BYTES} byte parser limit; "
+                    "the file was not parsed."
+                ),
+                anchors=(display_path,),
+                evidence=(SourceLocation(file=display_path),),
+            ),
+        )
+    try:
+        source = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
         return None, (
             Diagnostic(
                 code="workflow_read_error",
@@ -324,6 +350,23 @@ def extract_workflow(path: Path, *, display_path: str | None = None) -> GitHubEx
                 )
                 continue
             inputs = step.get("with")
+            if isinstance(inputs, Mapping) and (
+                set(inputs).difference({"role-to-assume", "aws-region", "audience"})
+                or inputs.get("audience", "sts.amazonaws.com") != "sts.amazonaws.com"
+            ):
+                diagnostics.append(
+                    _diagnostic(
+                        code="github_credential_options_unsupported",
+                        state=ResultState.INDETERMINATE,
+                        message="Credential action options exceed the supported default OIDC path.",
+                        file=file,
+                        path=f"{step_path}.with",
+                        value=step,
+                        key="with",
+                        anchors=anchors,
+                    )
+                )
+                continue
             role_raw = inputs.get("role-to-assume") if isinstance(inputs, Mapping) else None
             role = _literal(role_raw)
             if role is None:

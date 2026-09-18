@@ -116,6 +116,10 @@ def test_analyze_reports_only_newly_reachable_capability(tmp_path: Path) -> None
             "analyze",
             "--repository",
             "acme/payments",
+            "--before-oidc-subject-prefix",
+            "repo:acme/payments",
+            "--after-oidc-subject-prefix",
+            "repo:acme/payments",
             "--before-root",
             str(before),
             "--before-plan",
@@ -154,6 +158,10 @@ def test_analyze_output_is_byte_stable(tmp_path: Path) -> None:
         "analyze",
         "--repository",
         "acme/payments",
+        "--before-oidc-subject-prefix",
+        "repo:acme/payments",
+        "--after-oidc-subject-prefix",
+        "repo:acme/payments",
         "--before-root",
         str(before),
         "--before-plan",
@@ -172,3 +180,48 @@ def test_analyze_output_is_byte_stable(tmp_path: Path) -> None:
     assert main([*common, "--output", str(second)]) == 0
 
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_analyze_can_render_deterministic_markdown(tmp_path: Path) -> None:
+    before = tmp_path / "before"
+    after = tmp_path / "after"
+    before_plan, before_rbac = write_revision(before, verbs=["get"])
+    after_plan, after_rbac = write_revision(after, verbs=["get", "patch"])
+    output = tmp_path / "report.md"
+
+    assert (
+        main(
+            [
+                "analyze",
+                "--repository",
+                "acme/payments",
+                "--before-oidc-subject-prefix",
+                "repo:acme/payments",
+                "--after-oidc-subject-prefix",
+                "repo:acme/payments",
+                "--before-root",
+                str(before),
+                "--before-plan",
+                str(before_plan),
+                "--before-rbac",
+                str(before_rbac),
+                "--after-root",
+                str(after),
+                "--after-plan",
+                str(after_plan),
+                "--after-rbac",
+                str(after_rbac),
+                "--format",
+                "markdown",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    rendered = output.read_text(encoding="utf-8")
+    assert "## Findings" in rendered
+    assert "## Diagnostics" in rendered
+    assert "## Limitations" in rendered
+    assert "patch" in rendered
