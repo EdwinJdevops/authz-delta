@@ -14,30 +14,21 @@ from .facts import (
     RBACRole,
     WorkflowRoleRequest,
 )
+from .iam_strings import matches
 from .model import Capability, Diagnostic, ResultState, Snapshot, SourceLocation
 
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
-def _string_like(value: str, pattern: str) -> bool:
-    """Match only the '*' and '?' wildcards supported by IAM StringLike."""
-    expression = re.escape(pattern).replace(r"\*", ".*").replace(r"\?", ".")
-    return re.fullmatch(expression, value) is not None
-
-
 def _matches(subject: str, constraint: IAMSubjectConstraint) -> bool:
-    if constraint.operator == "StringEquals":
-        return subject == constraint.value
-    if constraint.operator == "StringLike":
-        return _string_like(subject, constraint.value)
-    return False
+    return matches(subject, constraint.operator, constraint.value)
 
 
-def _subject(repository: str, request: WorkflowRoleRequest) -> str | None:
-    if request.environment is None:
+def _subject(prefix: str | None, request: WorkflowRoleRequest) -> str | None:
+    if request.environment is None or prefix is None:
         return None
     environment = request.environment.replace(":", "%3A")
-    return f"repo:{repository}:environment:{environment}"
+    return f"{prefix}:environment:{environment}"
 
 
 def _role_key(binding: RBACBinding) -> tuple[str, str, str | None]:
@@ -60,6 +51,7 @@ def _merge_evidence(items: Iterable[SourceLocation]) -> tuple[SourceLocation, ..
 def build_snapshot(
     *,
     repository: str,
+    oidc_subject_prefix: str | None = None,
     workflows: tuple[WorkflowRoleRequest, ...],
     role_trusts: tuple[IAMRoleTrust, ...],
     access_entries: tuple[EKSAccessEntry, ...],
@@ -70,6 +62,14 @@ def build_snapshot(
     """Join only complete, supported, statically evidenced paths."""
     if _REPOSITORY.fullmatch(repository) is None:
         raise ValueError("repository must use the literal owner/name form")
+    if oidc_subject_prefix is not None:
+        owner, name = repository.split("/")
+        immutable = rf"repo:{re.escape(owner)}@[0-9]+/{re.escape(name)}@[0-9]+"
+        if (
+            oidc_subject_prefix != f"repo:{repository}"
+            and re.fullmatch(immutable, oidc_subject_prefix) is None
+        ):
+            raise ValueError("OIDC subject prefix must match the supplied repository and template")
 
     output_diagnostics: list[Diagnostic] = list(diagnostics)
     workflow_roles = {item.role_arn for item in workflows}
@@ -128,15 +128,19 @@ def build_snapshot(
 
     capability_evidence: dict[tuple[str, ...], set[SourceLocation]] = defaultdict(set)
     for request in workflows:
-        subject = _subject(repository, request)
+        subject = _subject(oidc_subject_prefix, request)
         if subject is None:
             output_diagnostics.append(
                 Diagnostic(
-                    code="github_subject_not_static",
+                    code=(
+                        "github_subject_prefix_unspecified"
+                        if oidc_subject_prefix is None
+                        else "github_subject_not_static"
+                    ),
                     state=ResultState.INDETERMINATE,
                     message=(
-                        "Release 0 proves GitHub OIDC subjects only for jobs with a literal "
-                        "environment."
+                        "A caller-verified OIDC subject prefix and a literal job environment "
+                        "are required; custom subject templates are unsupported."
                     ),
                     anchors=(request.workflow, request.job, request.role_arn),
                     evidence=request.evidence,

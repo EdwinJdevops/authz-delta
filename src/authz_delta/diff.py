@@ -28,7 +28,7 @@ def compare_snapshots(before: Snapshot, after: Snapshot) -> Delta:
     candidates = [
         item for identity, item in after_by_identity.items() if identity not in before_by_identity
     ]
-    removed = tuple(
+    removal_candidates = tuple(
         sorted(
             item
             for identity, item in before_by_identity.items()
@@ -38,6 +38,7 @@ def compare_snapshots(before: Snapshot, after: Snapshot) -> Delta:
 
     inherited_diagnostics = tuple(sorted(set(before.diagnostics).union(after.diagnostics)))
     findings: list[Capability] = []
+    removed: list[Capability] = []
     delta_diagnostics: list[Diagnostic] = []
     for candidate in sorted(candidates):
         blockers = [item for item in inherited_diagnostics if item.affects(candidate)]
@@ -57,8 +58,24 @@ def compare_snapshots(before: Snapshot, after: Snapshot) -> Delta:
             continue
         findings.append(candidate)
 
+    for candidate in removal_candidates:
+        if any(item.affects(candidate) for item in inherited_diagnostics):
+            delta_diagnostics.append(
+                Diagnostic(
+                    code="indeterminate_removal",
+                    state=ResultState.INDETERMINATE,
+                    message=(
+                        f"Cannot prove {candidate.finding_id} was removed due to unresolved inputs."
+                    ),
+                    anchors=tuple(sorted(candidate.anchors)),
+                    evidence=candidate.evidence,
+                )
+            )
+        else:
+            removed.append(candidate)
+
     return Delta(
         newly_reachable=tuple(findings),
-        removed=removed,
+        removed=tuple(removed),
         diagnostics=tuple(sorted(set(inherited_diagnostics).union(delta_diagnostics))),
     )

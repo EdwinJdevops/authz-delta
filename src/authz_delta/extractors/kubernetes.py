@@ -213,6 +213,21 @@ def _extract_role(
                 )
             )
             continue
+        if any("*" in value for value in (*api_groups, *resources, *verbs)):
+            diagnostics.append(
+                _diagnostic(
+                    code="rbac_wildcard_unsupported",
+                    message=(
+                        "Wildcard grants require coverage comparison, not exact tuple differences."
+                    ),
+                    file=file,
+                    document=document_index,
+                    path=path,
+                    value=raw_rule,
+                    anchors=anchors,
+                )
+            )
+            continue
         rules.append(RBACRule(api_groups=api_groups, resources=resources, verbs=verbs))
     if diagnostics:
         return None, tuple(sorted(set(diagnostics)))

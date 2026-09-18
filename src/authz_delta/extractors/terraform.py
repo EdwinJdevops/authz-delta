@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import fnmatch
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..facts import EKSAccessEntry, IAMRoleTrust, IAMSubjectConstraint
+from ..iam_strings import matches
 from ..model import Diagnostic, ResultState, SourceLocation
 
 _OIDC_PROVIDER_SUFFIX = ":oidc-provider/token.actions.githubusercontent.com"
@@ -51,7 +51,7 @@ def _diagnostic(
 
 def _as_strings(value: object) -> tuple[str, ...] | None:
     values = value if isinstance(value, list) else [value]
-    if not all(isinstance(item, str) and item for item in values):
+    if not values or not all(isinstance(item, str) and item for item in values):
         return None
     return tuple(sorted(set(values)))
 
@@ -86,6 +86,16 @@ def _change_maps(plan: Mapping[str, object]) -> dict[str, tuple[object, object]]
     return result
 
 
+def _has_unknown(value: object) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, Mapping):
+        return any(_has_unknown(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_unknown(item) for item in value)
+    return False
+
+
 def _field_unavailable(
     *,
     field: str,
@@ -96,9 +106,9 @@ def _field_unavailable(
     address: str,
     anchors: tuple[str, ...],
 ) -> Diagnostic | None:
-    unknown_value = unknown.get(field) if isinstance(unknown, Mapping) else None
+    unknown_value = unknown.get(field) if isinstance(unknown, Mapping) else unknown
     sensitive_value = sensitive.get(field) if isinstance(sensitive, Mapping) else None
-    if unknown_value is True:
+    if _has_unknown(unknown_value):
         return _diagnostic(
             code="terraform_value_unknown",
             message=f"Terraform value {field} is unknown in the planned state.",
@@ -180,7 +190,7 @@ def _statement_subjects(
             ),
         )
 
-    audience_constraints: list[str] = []
+    audience_constraints: list[tuple[str, tuple[str, ...]]] = []
     subject_constraints: list[tuple[str, tuple[str, ...]]] = []
     for operator, raw_terms in condition.items():
         if not isinstance(raw_terms, Mapping):
@@ -224,7 +234,7 @@ def _statement_subjects(
                         anchors=(address, role_arn),
                     ),
                 )
-            audience_constraints.extend(values)
+            audience_constraints.append((str(operator), values))
         if _SUBJECT_KEY in raw_terms:
             values = _as_strings(raw_terms[_SUBJECT_KEY])
             if values is None:
@@ -240,8 +250,9 @@ def _statement_subjects(
                 )
             subject_constraints.append((str(operator), values))
 
-    if audience_constraints and not any(
-        fnmatch.fnmatchcase("sts.amazonaws.com", pattern) for pattern in audience_constraints
+    if not all(
+        any(matches("sts.amazonaws.com", operator, value) for value in values)
+        for operator, values in audience_constraints
     ):
         return (), ()
     if len(subject_constraints) > 1:
@@ -324,12 +335,49 @@ def _extract_role(
                 anchors=anchors,
             ),
         )
-    raw_statements = policy.get("Statement", [])
+    raw_statements = policy.get("Statement")
     statements = raw_statements if isinstance(raw_statements, list) else [raw_statements]
     constraints: set[IAMSubjectConstraint] = set()
     policy_diagnostics: list[Diagnostic] = []
     for statement in statements:
-        if not isinstance(statement, Mapping) or not _relevant_statement(statement):
+        if not isinstance(statement, Mapping) or statement.get("Effect") not in {"Allow", "Deny"}:
+            policy_diagnostics.append(
+                _diagnostic(
+                    code="iam_statement_invalid",
+                    message="IAM trust statement is malformed.",
+                    file=file,
+                    address=address,
+                    anchors=anchors,
+                    suffix="assume_role_policy",
+                )
+            )
+            continue
+        # Until deny conditions are evaluated completely, no allow in this role is proven.
+        if statement.get("Effect") == "Deny":
+            policy_diagnostics.append(
+                _diagnostic(
+                    code="iam_deny_not_evaluated",
+                    message="Trust contains a Deny statement; its effect is not evaluated.",
+                    file=file,
+                    address=address,
+                    anchors=anchors,
+                    suffix="assume_role_policy",
+                )
+            )
+            continue
+        if "NotAction" in statement or "NotPrincipal" in statement:
+            policy_diagnostics.append(
+                _diagnostic(
+                    code="iam_statement_unsupported",
+                    message="NotAction and NotPrincipal trust statements are unsupported.",
+                    file=file,
+                    address=address,
+                    anchors=anchors,
+                    suffix="assume_role_policy",
+                )
+            )
+            continue
+        if not _relevant_statement(statement):
             continue
         subjects, statement_diagnostics = _statement_subjects(
             statement, file=file, address=address, role_arn=role_raw

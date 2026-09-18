@@ -67,6 +67,7 @@ def binding(role_kind: str = "Role") -> RBACBinding:
 def test_builds_complete_environment_bound_capabilities() -> None:
     snapshot = build_snapshot(
         repository="acme/payments",
+        oidc_subject_prefix="repo:acme/payments",
         workflows=(workflow(),),
         role_trusts=(trust("StringLike", "repo:acme/payments:environment:*"),),
         access_entries=(access(),),
@@ -86,6 +87,7 @@ def test_builds_complete_environment_bound_capabilities() -> None:
 def test_string_equals_does_not_treat_asterisk_as_wildcard() -> None:
     snapshot = build_snapshot(
         repository="acme/payments",
+        oidc_subject_prefix="repo:acme/payments",
         workflows=(workflow(),),
         role_trusts=(trust("StringEquals", "repo:acme/payments:environment:*"),),
         access_entries=(access(),),
@@ -99,6 +101,7 @@ def test_string_equals_does_not_treat_asterisk_as_wildcard() -> None:
 def test_role_not_mapped_to_eks_has_no_capability() -> None:
     snapshot = build_snapshot(
         repository="acme/payments",
+        oidc_subject_prefix="repo:acme/payments",
         workflows=(workflow(),),
         role_trusts=(trust("StringLike", "repo:acme/payments:*"),),
         access_entries=(),
@@ -112,6 +115,7 @@ def test_role_not_mapped_to_eks_has_no_capability() -> None:
 def test_role_binding_to_cluster_role_is_namespace_scoped() -> None:
     snapshot = build_snapshot(
         repository="acme/payments",
+        oidc_subject_prefix="repo:acme/payments",
         workflows=(workflow(),),
         role_trusts=(trust("StringLike", "repo:acme/payments:*"),),
         access_entries=(access(),),
@@ -125,6 +129,7 @@ def test_role_binding_to_cluster_role_is_namespace_scoped() -> None:
 def test_multiple_clusters_do_not_reuse_unscoped_rbac_manifests() -> None:
     snapshot = build_snapshot(
         repository="acme/payments",
+        oidc_subject_prefix="repo:acme/payments",
         workflows=(workflow(),),
         role_trusts=(trust("StringLike", "repo:acme/payments:*"),),
         access_entries=(access("production"), access("staging")),
@@ -139,6 +144,7 @@ def test_multiple_clusters_do_not_reuse_unscoped_rbac_manifests() -> None:
 def test_workflow_without_static_environment_is_indeterminate() -> None:
     snapshot = build_snapshot(
         repository="acme/payments",
+        oidc_subject_prefix="repo:acme/payments",
         workflows=(workflow(None),),
         role_trusts=(trust("StringLike", "repo:acme/payments:*"),),
         access_entries=(access(),),
@@ -148,3 +154,31 @@ def test_workflow_without_static_environment_is_indeterminate() -> None:
 
     assert snapshot.capabilities == frozenset()
     assert {item.code for item in snapshot.diagnostics} == {"github_subject_not_static"}
+
+
+def test_missing_subject_template_does_not_guess_legacy_format() -> None:
+    snapshot = build_snapshot(
+        repository="acme/payments",
+        workflows=(workflow(),),
+        role_trusts=(trust("StringLike", "repo:acme/payments:*"),),
+        access_entries=(access(),),
+        roles=(role(),),
+        bindings=(binding(),),
+    )
+    assert not snapshot.capabilities
+    assert {d.code for d in snapshot.diagnostics} == {"github_subject_prefix_unspecified"}
+
+
+def test_explicit_immutable_subject_prefix_matches_exact_trust() -> None:
+    subject = "repo:acme@123/payments@456:environment:production"
+    snapshot = build_snapshot(
+        repository="acme/payments",
+        oidc_subject_prefix="repo:acme@123/payments@456",
+        workflows=(workflow(),),
+        role_trusts=(trust("StringEquals", subject),),
+        access_entries=(access(),),
+        roles=(role(),),
+        bindings=(binding(),),
+    )
+    assert not snapshot.diagnostics
+    assert {c.oidc_subject for c in snapshot.capabilities} == {subject}

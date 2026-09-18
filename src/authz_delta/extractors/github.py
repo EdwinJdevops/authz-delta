@@ -324,6 +324,23 @@ def extract_workflow(path: Path, *, display_path: str | None = None) -> GitHubEx
                 )
                 continue
             inputs = step.get("with")
+            if isinstance(inputs, Mapping) and (
+                set(inputs).difference({"role-to-assume", "aws-region", "audience"})
+                or inputs.get("audience", "sts.amazonaws.com") != "sts.amazonaws.com"
+            ):
+                diagnostics.append(
+                    _diagnostic(
+                        code="github_credential_options_unsupported",
+                        state=ResultState.INDETERMINATE,
+                        message="Credential action options exceed the supported default OIDC path.",
+                        file=file,
+                        path=f"{step_path}.with",
+                        value=step,
+                        key="with",
+                        anchors=anchors,
+                    )
+                )
+                continue
             role_raw = inputs.get("role-to-assume") if isinstance(inputs, Mapping) else None
             role = _literal(role_raw)
             if role is None:
