@@ -1,0 +1,28 @@
+{
+  "schema_version": "0.2",
+  "capabilities": [
+    {
+      "workflow": "deploy.yml",
+      "job": "deploy",
+      "oidc_subject": "repo:acme/platform:environment:production",
+      "role_arn": "arn:aws:iam::123456789012:role/deployer",
+      "cluster": "arn:aws:eks:us-east-1:123456789012:cluster/platform",
+      "kubernetes_group": "platform-deployers",
+      "scope": "cluster",
+      "api_group": "",
+      "resource": "secrets",
+      "verb": "get",
+      "evidence": [
+        {
+          "file": "examples/role.yaml",
+          "path": "rules[0]"
+        },
+        {
+          "file": "examples/binding.yaml",
+          "path": "subjects[0]"
+        }
+      ]
+    }
+  ],
+  "diagnostics": []
+}
