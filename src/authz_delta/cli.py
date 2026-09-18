@@ -11,6 +11,7 @@ from pathlib import Path
 from .builder import build_revision
 from .diff import compare_snapshots
 from .model import Snapshot
+from .render import render_markdown
 
 
 def _load_snapshot(path: Path) -> Snapshot:
@@ -34,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--before", type=Path, required=True)
     compare.add_argument("--after", type=Path, required=True)
     compare.add_argument("--output", type=Path, required=True)
+    compare.add_argument("--format", choices=("json", "markdown"), default="json")
 
     analyze = subparsers.add_parser("analyze", help="analyze and compare two repository inputs")
     analyze.add_argument("--repository", required=True, help="literal GitHub owner/name")
@@ -49,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--after-plan", type=Path, required=True)
     analyze.add_argument("--after-rbac", type=Path, action="append", required=True)
     analyze.add_argument("--output", type=Path, required=True)
+    analyze.add_argument("--format", choices=("json", "markdown"), default="json")
     return parser
 
 
@@ -134,7 +137,12 @@ def _analyze(args: argparse.Namespace) -> dict[str, object]:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     report = _compare_normalized(args) if args.command == "compare" else _analyze(args)
-    args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    rendered = (
+        json.dumps(report, indent=2, sort_keys=True) + "\n"
+        if args.format == "json"
+        else render_markdown(report)
+    )
+    args.output.write_text(rendered, encoding="utf-8")
     return 0
 
 
