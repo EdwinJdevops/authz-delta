@@ -16,6 +16,8 @@ from ..model import Diagnostic, ResultState, SourceLocation
 
 _API_VERSION = "rbac.authorization.k8s.io/v1"
 _KINDS = frozenset({"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"})
+_MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+_MAX_MANIFEST_DOCUMENTS = 256
 
 
 @dataclass(frozen=True)
@@ -360,8 +362,41 @@ def extract_rbac(path: Path, *, display_path: str | None = None) -> KubernetesEx
     """Extract supported RBAC objects without rendering or contacting a cluster."""
     file = display_path or path.as_posix()
     try:
-        source = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except (OSError, UnicodeError) as error:
+        return KubernetesExtraction(
+            roles=(),
+            bindings=(),
+            diagnostics=(
+                Diagnostic(
+                    code="rbac_read_error",
+                    state=ResultState.INDETERMINATE,
+                    message=f"Cannot read Kubernetes manifest: {error}.",
+                    anchors=(file,),
+                    evidence=(SourceLocation(file=file),),
+                ),
+            ),
+        )
+    if len(raw) > _MAX_MANIFEST_BYTES:
+        return KubernetesExtraction(
+            roles=(),
+            bindings=(),
+            diagnostics=(
+                Diagnostic(
+                    code="rbac_size_limit_exceeded",
+                    state=ResultState.INDETERMINATE,
+                    message=(
+                        f"Manifest exceeds the {_MAX_MANIFEST_BYTES} byte parser limit; "
+                        "the file was not parsed."
+                    ),
+                    anchors=(file,),
+                    evidence=(SourceLocation(file=file),),
+                ),
+            ),
+        )
+    try:
+        source = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
         return KubernetesExtraction(
             roles=(),
             bindings=(),
@@ -403,6 +438,23 @@ def extract_rbac(path: Path, *, display_path: str | None = None) -> KubernetesEx
                     code="yaml_parse_error",
                     state=ResultState.INDETERMINATE,
                     message=f"Manifest is not valid YAML: {problem or type(error).__name__}.",
+                    anchors=(file,),
+                    evidence=(SourceLocation(file=file),),
+                ),
+            ),
+        )
+    if len(documents) > _MAX_MANIFEST_DOCUMENTS:
+        return KubernetesExtraction(
+            roles=(),
+            bindings=(),
+            diagnostics=(
+                Diagnostic(
+                    code="rbac_document_limit_exceeded",
+                    state=ResultState.INDETERMINATE,
+                    message=(
+                        f"Manifest contains more than {_MAX_MANIFEST_DOCUMENTS} YAML documents; "
+                        "the file was not analyzed."
+                    ),
                     anchors=(file,),
                     evidence=(SourceLocation(file=file),),
                 ),

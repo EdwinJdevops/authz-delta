@@ -15,6 +15,7 @@ _OIDC_PROVIDER_SUFFIX = ":oidc-provider/token.actions.githubusercontent.com"
 _AUDIENCE_KEY = "token.actions.githubusercontent.com:aud"
 _SUBJECT_KEY = "token.actions.githubusercontent.com:sub"
 _SUPPORTED_OPERATORS = frozenset({"StringEquals", "StringLike"})
+_MAX_PLAN_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -471,8 +472,41 @@ def extract_terraform_plan(path: Path, *, display_path: str | None = None) -> Te
     """Extract supported IAM and EKS facts from a plan JSON document."""
     file = display_path or path.as_posix()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raw_bytes = path.read_bytes()
+    except (OSError, UnicodeError) as error:
+        return TerraformExtraction(
+            role_trusts=(),
+            access_entries=(),
+            diagnostics=(
+                Diagnostic(
+                    code="terraform_plan_read_error",
+                    state=ResultState.INDETERMINATE,
+                    message=f"Cannot read Terraform JSON plan: {error}.",
+                    anchors=(file,),
+                    evidence=(SourceLocation(file=file),),
+                ),
+            ),
+        )
+    if len(raw_bytes) > _MAX_PLAN_BYTES:
+        return TerraformExtraction(
+            role_trusts=(),
+            access_entries=(),
+            diagnostics=(
+                Diagnostic(
+                    code="terraform_plan_size_limit_exceeded",
+                    state=ResultState.INDETERMINATE,
+                    message=(
+                        f"Terraform plan exceeds the {_MAX_PLAN_BYTES} byte parser limit; "
+                        "the file was not parsed."
+                    ),
+                    anchors=(file,),
+                    evidence=(SourceLocation(file=file),),
+                ),
+            ),
+        )
+    try:
+        raw = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         return TerraformExtraction(
             role_trusts=(),
             access_entries=(),

@@ -149,3 +149,23 @@ def test_wildcard_grant_is_not_an_exact_capability(tmp_path: Path) -> None:
     result = extract_rbac(rbac)
     assert not result.roles
     assert any(d.code == "rbac_wildcard_unsupported" for d in result.diagnostics)
+
+
+def test_parser_limits_reject_oversized_inputs(tmp_path: Path) -> None:
+    root = tmp_path / "revision"
+    workflow_dir = root / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    workflow = workflow_dir / "large.yml"
+    workflow.write_bytes(b"#" + b"x" * (2 * 1024 * 1024))
+    workflow_result = extract_workflow(workflow)
+    assert any(d.code == "workflow_size_limit_exceeded" for d in workflow_result.diagnostics)
+
+    manifest = root / "large.yaml"
+    manifest.write_bytes(("---\nnull\n" * 257).encode())
+    rbac_result = extract_rbac(manifest)
+    assert any(d.code == "rbac_document_limit_exceeded" for d in rbac_result.diagnostics)
+
+    plan = root / "large.json"
+    plan.write_bytes(b"{" + b"x" * (16 * 1024 * 1024) + b"}")
+    terraform_result = extract_terraform_plan(plan)
+    assert any(d.code == "terraform_plan_size_limit_exceeded" for d in terraform_result.diagnostics)
